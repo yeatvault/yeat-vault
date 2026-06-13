@@ -1590,6 +1590,14 @@
       emptyState: document.getElementById("emptyState")
     };
 
+
+    let searchRenderTimer = null;
+    let trackRenderToken = 0;
+    let marqueeToken = 0;
+    const SEARCH_DELAY_MS = 220;
+    const RENDER_CHUNK_SIZE = 80;
+    const MARQUEE_CHUNK_SIZE = 70;
+
     function escapeHTML(value) {
       return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
     }
@@ -1712,6 +1720,7 @@
           info: Object.assign({ source: "Unknown", length: "--:--", version: "Unknown", notes: "" }, track.info || {})
         };
       });
+      buildSearchIndex();
     }
 
     function allYears() {
@@ -1820,7 +1829,7 @@
     }
 
     function titleHaystack(track) {
-      return normalize(track.title);
+      return track?._search?.title || normalize(track.title);
     }
 
     function collectSearchValues(value, output = []) {
@@ -1839,12 +1848,29 @@
       return output;
     }
 
-    function deepSearchHaystack(track) {
-      return normalize(collectSearchValues(track).join(" "));
-    }
-
     function splitSearchWords(value) {
       return normalize(value).split(/[^a-z0-9]+/).filter(word => word.length >= 3);
+    }
+
+    function deepSearchHaystack(track) {
+      return track?._search?.deep || normalize(collectSearchValues(track).join(" "));
+    }
+
+    function buildSearchIndex() {
+      state.tracks.forEach(track => {
+        const titleText = track.title || "";
+        const deepText = collectSearchValues(track).join(" ");
+        Object.defineProperty(track, "_search", {
+          value: {
+            title: normalize(titleText),
+            deep: normalize(deepText),
+            titleWords: splitSearchWords(titleText),
+            deepWords: splitSearchWords(deepText)
+          },
+          enumerable: false,
+          configurable: true
+        });
+      });
     }
 
     function editDistanceLimited(a, b, limit = 2) {
@@ -1871,11 +1897,12 @@
       return previous[b.length];
     }
 
-    function similarityScore(track, query, mode = "title") {
-      const qWords = splitSearchWords(query);
+    function similarityScore(track, query, mode = "title", queryWords = null) {
+      const qWords = queryWords || splitSearchWords(query);
       if (!qWords.length) return 0;
-      const sourceText = mode === "deep" ? collectSearchValues(track).join(" ") : track.title;
-      const words = splitSearchWords(sourceText);
+      const words = mode === "deep"
+        ? (track?._search?.deepWords || splitSearchWords(collectSearchValues(track).join(" ")))
+        : (track?._search?.titleWords || splitSearchWords(track.title));
       if (!words.length) return 0;
 
       let score = 0;
@@ -1911,6 +1938,7 @@
     function filteredTracks() {
       const search = activeSearchMode();
       const query = search.normalized;
+      const queryWords = splitSearchWords(search.raw);
       const haystackFor = track => search.mode === "deep" ? deepSearchHaystack(track) : titleHaystack(track);
       const passesFilters = track =>
         (state.era === "all" || track.era === state.era)
@@ -1918,9 +1946,10 @@
         && (state.album === "all" || track.intendedAlbum === state.album)
         && (state.quality === "all" || track.quality === state.quality);
 
-      const exact = state.tracks.filter(track => {
-        return passesFilters(track) && (!query || haystackFor(track).includes(query));
-      });
+      const exact = [];
+      for (const track of state.tracks) {
+        if (passesFilters(track) && (!query || haystackFor(track).includes(query))) exact.push(track);
+      }
 
       const sortTracks = output => {
         output.sort((a, b) => {
@@ -1933,15 +1962,20 @@
         return output;
       };
 
-      const suggestions = query
-        ? state.tracks
-            .filter(track => passesFilters(track) && !exact.includes(track))
-            .map(track => ({ track, score: similarityScore(track, query, search.mode) }))
-            .filter(item => item.score >= 55)
-            .sort((a, b) => b.score - a.score || eraIndex(a.track.era) - eraIndex(b.track.era) || a.track.title.localeCompare(b.track.title))
-            .slice(0, 20)
-            .map(item => item.track)
-        : [];
+      let suggestions = [];
+      if (query && queryWords.length) {
+        const exactSet = new Set(exact);
+        const scored = [];
+        for (const track of state.tracks) {
+          if (!passesFilters(track) || exactSet.has(track)) continue;
+          const score = similarityScore(track, query, search.mode, queryWords);
+          if (score >= 55) scored.push({ track, score });
+        }
+        suggestions = scored
+          .sort((a, b) => b.score - a.score || eraIndex(a.track.era) - eraIndex(b.track.era) || a.track.title.localeCompare(b.track.title))
+          .slice(0, 20)
+          .map(item => item.track);
+      }
 
       return { exact: sortTracks(exact), suggestions };
     }
@@ -2111,11 +2145,7 @@
       return ` version-stack${group.index === 0 ? " version-first" : ""}${group.index === group.size - 1 ? " version-last" : ""}`;
     }
 
-    function renderTrackRows(tracks) {
-      return annotateVersionStacks(tracks).map(item => renderTrackRow(item.track, item.group)).join("");
-    }
-
-    function renderTrackRow(track, group = null) {
+    function renderTrackActions(track) {
       const hasFile = Boolean(track.file);
       const privateLinks = Array.isArray(track.privateLinks) && track.privateLinks.length ? track.privateLinks : (track.privateLink ? [track.privateLink] : []);
       const hasPrivateLink = privateLinks.length > 0;
@@ -2125,12 +2155,45 @@
           : `<a class="action primary link-pulse" href="${escapeHTML(privateLinks[0])}" target="_blank" rel="noopener noreferrer">Open link</a>`)
         : `<button class="btn link-pulse no-link" type="button" data-no-link="${escapeHTML(track.id)}">Open link</button><span class="no-link-note">No link on this track</span>`;
       const lyricsAction = `<a class="action" href="${escapeHTML(lyricsSearchUrl(track))}" target="_blank" rel="noopener noreferrer">Lyrics</a>`;
-      const actions = [
+      return [
         linkAction,
         lyricsAction,
         hasFile ? `<a class="action" href="${escapeHTML(track.file)}" download>Download file</a>` : "",
         `<button class="btn" type="button" data-copy="${escapeHTML(track.id)}">Copy info</button>`
       ].filter(Boolean).join("");
+    }
+
+    function renderTrackDetails(track) {
+      const hasFile = Boolean(track.file);
+      return `
+        <div class="info-grid">
+          <div class="info-box"><span>Era</span><strong>${escapeHTML(track.era)}</strong></div>
+          <div class="info-box"><span>Album / project</span><strong>${escapeHTML(track.intendedAlbum)}</strong></div>
+          <div class="info-box"><span>Status</span><strong>${escapeHTML(track.status)}</strong></div>
+          <div class="info-box"><span>Quality</span><strong>${escapeHTML(track.quality)}</strong></div>
+          <div class="info-box"><span>Length</span><strong>${escapeHTML(track.info.length || "--:--")}</strong></div>
+          <div class="info-box"><span>Version</span><strong>${escapeHTML(track.info.version || "Unknown")}</strong></div>
+          <div class="info-box"><span>Source</span><strong>${escapeHTML(track.info.source || "Unknown")}</strong></div>
+          <div class="info-box og-box"><span>OG Filename</span><strong>${escapeHTML(track.info.ogFilename || "--")}</strong></div>
+          <div class="info-box date-box"><span>File date</span><strong>${escapeHTML(track.info.dates?.fileDate || "--")}</strong></div>
+          <div class="info-box date-box"><span>First preview</span><strong>${escapeHTML(track.info.dates?.firstPreview || "--")}</strong></div>
+          <div class="info-box date-box"><span>Leak date</span><strong>${escapeHTML(track.info.dates?.leakDate || "--")}</strong></div>
+          <div class="info-box links-box"><span>Links from notes</span><strong>${renderNoteLinks(track)}</strong></div>
+          <div class="info-box note-box"><span>Notes</span><div class="note-text">${renderNoteText(track)}</div></div>
+        </div>
+        ${hasFile ? `<audio controls preload="none" src="${escapeHTML(track.file)}"></audio>` : ""}
+        <div class="actions">${renderTrackActions(track)}</div>`;
+    }
+
+    function renderAnnotatedTrackRows(items) {
+      return items.map(item => renderTrackRow(item.track, item.group)).join("");
+    }
+
+    function renderTrackRows(tracks) {
+      return renderAnnotatedTrackRows(annotateVersionStacks(tracks));
+    }
+
+    function renderTrackRow(track, group = null) {
       return `
         <details class="track-row${versionStackClass(group)}" data-id="${escapeHTML(track.id)}">
           <summary>
@@ -2144,32 +2207,41 @@
             </span>
             <span class="details-hint">open</span>
           </summary>
-          <div class="details">
-
-            <div class="info-grid">
-              <div class="info-box"><span>Era</span><strong>${escapeHTML(track.era)}</strong></div>
-              <div class="info-box"><span>Album / project</span><strong>${escapeHTML(track.intendedAlbum)}</strong></div>
-              <div class="info-box"><span>Status</span><strong>${escapeHTML(track.status)}</strong></div>
-              <div class="info-box"><span>Quality</span><strong>${escapeHTML(track.quality)}</strong></div>
-              <div class="info-box"><span>Length</span><strong>${escapeHTML(track.info.length || "--:--")}</strong></div>
-              <div class="info-box"><span>Version</span><strong>${escapeHTML(track.info.version || "Unknown")}</strong></div>
-              <div class="info-box"><span>Source</span><strong>${escapeHTML(track.info.source || "Unknown")}</strong></div>
-              <div class="info-box og-box"><span>OG Filename</span><strong>${escapeHTML(track.info.ogFilename || "--")}</strong></div>
-              <div class="info-box date-box"><span>File date</span><strong>${escapeHTML(track.info.dates?.fileDate || "--")}</strong></div>
-              <div class="info-box date-box"><span>First preview</span><strong>${escapeHTML(track.info.dates?.firstPreview || "--")}</strong></div>
-              <div class="info-box date-box"><span>Leak date</span><strong>${escapeHTML(track.info.dates?.leakDate || "--")}</strong></div>
-
-              <div class="info-box links-box"><span>Links from notes</span><strong>${renderNoteLinks(track)}</strong></div>
-              <div class="info-box note-box"><span>Notes</span><div class="note-text">${renderNoteText(track)}</div></div>
-            </div>
-            ${hasFile ? `<audio controls preload="none" src="${escapeHTML(track.file)}"></audio>` : ""}
-            <div class="actions">${actions}</div>
-          </div>
+          <div class="details" data-lazy-details="${escapeHTML(track.id)}"></div>
         </details>`;
+    }
+
+    function fillLazyTrackDetails(row) {
+      if (!row?.open) return;
+      const target = row.querySelector("[data-lazy-details]");
+      if (!target || target.dataset.loaded === "1") return;
+      const track = state.tracks.find(item => item.id === row.dataset.id);
+      if (!track) return;
+      target.innerHTML = renderTrackDetails(track);
+      target.dataset.loaded = "1";
+    }
+
+    function renderTrackRowChunks(container, annotatedRows, token, done = null) {
+      let index = 0;
+      container.innerHTML = "";
+      const step = () => {
+        if (token !== trackRenderToken) return;
+        const next = Math.min(index + RENDER_CHUNK_SIZE, annotatedRows.length);
+        container.insertAdjacentHTML("beforeend", renderAnnotatedTrackRows(annotatedRows.slice(index, next)));
+        index = next;
+        if (index < annotatedRows.length) {
+          requestAnimationFrame(step);
+        } else {
+          if (done) done();
+          updateTrackTitleMarquees(container);
+        }
+      };
+      requestAnimationFrame(step);
     }
 
     function renderTracks() {
       const shouldShowTracks = state.browsing || state.query || state.deepQuery || hasAdvancedFilters() || state.era !== "all";
+      trackRenderToken += 1;
       if (!shouldShowTracks) {
         els.browserPanel.classList.remove("show");
         els.trackRows.innerHTML = "";
@@ -2187,37 +2259,54 @@
       const tracks = groups.exact;
       const suggestions = groups.suggestions;
       const totalVisible = tracks.length + suggestions.length;
+      const token = trackRenderToken;
       els.countPill.textContent = `${state.tracks.length} tracks`;
       els.visibleCount.textContent = `${tracks.length}${suggestions.length ? ` + ${suggestions.length}` : ""}`;
       els.emptyState.classList.toggle("show", totalVisible === 0);
-
-      const exactHtml = renderTrackRows(tracks);
-      const suggestionsHtml = suggestions.length
-        ? `<div class="suggestion-divider">Close results</div><div class="suggestion-list">${renderTrackRows(suggestions)}</div>`
-        : "";
-      els.trackRows.innerHTML = exactHtml + suggestionsHtml;
-      requestAnimationFrame(updateTrackTitleMarquees);
+      els.trackRows.innerHTML = "";
 
       updateActiveSummary();
       renderEraCards();
+
+      if (!totalVisible) return;
+
+      const exactItems = annotateVersionStacks(tracks);
+      const suggestionItems = annotateVersionStacks(suggestions);
+
+      renderTrackRowChunks(els.trackRows, exactItems, token, () => {
+        if (token !== trackRenderToken || !suggestionItems.length) return;
+        els.trackRows.insertAdjacentHTML("beforeend", `<div class="suggestion-divider">Close results</div><div class="suggestion-list"></div>`);
+        const suggestionContainer = els.trackRows.querySelector(".suggestion-list");
+        renderTrackRowChunks(suggestionContainer, suggestionItems, token);
+      });
     }
 
+    function applyTrackTitleMarquee(wrapper) {
+      const text = wrapper.querySelector(".track-name-text");
+      if (!text) return;
+      wrapper.classList.remove("is-overflow");
+      wrapper.style.removeProperty("--track-name-distance");
+      wrapper.style.removeProperty("--track-name-duration");
+      const distance = Math.max(0, text.scrollWidth - wrapper.clientWidth + 28);
+      if (distance > 28) {
+        const duration = Math.min(32, Math.max(12, distance / 28 + 8));
+        wrapper.style.setProperty("--track-name-distance", `${distance}px`);
+        wrapper.style.setProperty("--track-name-duration", `${duration.toFixed(1)}s`);
+        wrapper.classList.add("is-overflow");
+      }
+    }
 
-    function updateTrackTitleMarquees() {
-      document.querySelectorAll(".track-name").forEach(wrapper => {
-        const text = wrapper.querySelector(".track-name-text");
-        if (!text) return;
-        wrapper.classList.remove("is-overflow");
-        wrapper.style.removeProperty("--track-name-distance");
-        wrapper.style.removeProperty("--track-name-duration");
-        const distance = Math.max(0, text.scrollWidth - wrapper.clientWidth + 28);
-        if (distance > 28) {
-          const duration = Math.min(32, Math.max(12, distance / 28 + 8));
-          wrapper.style.setProperty("--track-name-distance", `${distance}px`);
-          wrapper.style.setProperty("--track-name-duration", `${duration.toFixed(1)}s`);
-          wrapper.classList.add("is-overflow");
-        }
-      });
+    function updateTrackTitleMarquees(root = document) {
+      const wrappers = Array.from(root.querySelectorAll(".track-name"));
+      let index = 0;
+      const token = ++marqueeToken;
+      const step = () => {
+        if (token !== marqueeToken) return;
+        const next = Math.min(index + MARQUEE_CHUNK_SIZE, wrappers.length);
+        for (; index < next; index += 1) applyTrackTitleMarquee(wrappers[index]);
+        if (index < wrappers.length) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
     }
 
     window.addEventListener("resize", () => requestAnimationFrame(updateTrackTitleMarquees));
@@ -2231,6 +2320,15 @@
         element.classList.add("shine");
         setTimeout(() => element.classList.remove("shine"), 1800);
       });
+    }
+
+
+    function scheduleRenderTracks(delay = SEARCH_DELAY_MS) {
+      if (searchRenderTimer) window.clearTimeout(searchRenderTimer);
+      searchRenderTimer = window.setTimeout(() => {
+        searchRenderTimer = null;
+        renderTracks();
+      }, delay);
     }
 
     function selectEra(era) {
@@ -2293,7 +2391,7 @@
           els.deepSearchInput.value = "";
           state.browsing = true;
         }
-        renderTracks();
+        scheduleRenderTracks();
       });
       els.deepSearchInput.addEventListener("input", event => {
         state.deepQuery = event.target.value.trim();
@@ -2302,7 +2400,7 @@
           els.searchInput.value = "";
           state.browsing = true;
         }
-        renderTracks();
+        scheduleRenderTracks();
       });
       els.searchInput.addEventListener("keydown", event => { if (event.key === "Escape") resetToHome(); });
       els.deepSearchInput.addEventListener("keydown", event => { if (event.key === "Escape") resetToHome(); });
@@ -2329,6 +2427,11 @@
       els.albumFilter.addEventListener("change", event => { state.album = event.target.value; state.browsing = true; renderTracks(); });
       els.qualityFilter.addEventListener("change", event => { state.quality = event.target.value; state.browsing = true; renderTracks(); });
       els.sortFilter.addEventListener("change", event => { state.sort = event.target.value; state.browsing = true; renderTracks(); });
+      els.trackRows.addEventListener("toggle", event => {
+        const row = event.target.closest("details.track-row");
+        fillLazyTrackDetails(row);
+      }, true);
+
       els.trackRows.addEventListener("click", async event => {
         const noLinkButton = event.target.closest("button[data-no-link]");
         if (noLinkButton) {
