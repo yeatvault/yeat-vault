@@ -2040,5 +2040,55 @@
     "ffadea9c7ee0ab1b7e99929ce8adbef0de788472",
     "ffb8bdda39af7e940b9a1d43b797eba5ca523bad",
     "fff4e0f20b35431ee222e7929b8d61fbbc4fb87d"
+  ],
+  "columns": [
+    {
+      "name": "Era",
+      "key": "era"
+    },
+    {
+      "name": "Name",
+      "key": "name"
+    },
+    {
+      "name": "Notes(Join the Yeat Hub Discord!)",
+      "key": "notesjointheyeathubdiscord"
+    },
+    {
+      "name": "Track Length",
+      "key": "tracklength"
+    },
+    {
+      "name": "File Date",
+      "key": "filedate"
+    },
+    {
+      "name": "First Preview",
+      "key": "firstpreview"
+    },
+    {
+      "name": "Leak Date",
+      "key": "leakdate"
+    },
+    {
+      "name": "OG File Leak Date",
+      "key": "ogfileleakdate"
+    },
+    {
+      "name": "Type",
+      "key": "type"
+    },
+    {
+      "name": "Available Length",
+      "key": "availablelength"
+    },
+    {
+      "name": "Quality",
+      "key": "quality"
+    },
+    {
+      "name": "Link(s)",
+      "key": "links"
+    }
   ]
 }
