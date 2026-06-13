@@ -1,0 +1,31 @@
+{
+  "id": "new-track-2026",
+  "title": "New Track Title",
+  "era": "NEW ERA NAME",
+  "year": 2026,
+  "intendedAlbum": "NEW ERA NAME",
+  "status": "Throwaway • Snippet",
+  "quality": "High Quality",
+  "file": "",
+  "privateLink": "",
+  "description": "",
+  "info": {
+    "source": "Yeat Trackër — Unreleased",
+    "length": "--:--",
+    "version": "Throwaway",
+    "ogFilename": "--",
+    "dates": {
+      "fileDate": "--",
+      "firstPreview": "--",
+      "leakDate": "--"
+    },
+    "noteLinksBlock": [
+      {
+        "text": "Example source link",
+        "url": "https://example.com"
+      }
+    ],
+    "notes": "Write notes here."
+  },
+  "lyricsSearch": "auto"
+}
