@@ -1,0 +1,31 @@
+name: Sync embedded tracks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync tracks into index
+        run: python sync_tracks.py
+
+      - name: Commit synced index
+        run: |
+          git config user.name "yeat-vault-bot"
+          git config user.email "actions@github.com"
+          git add index.html
+          git commit -m "Sync embedded tracks" || echo "No changes to commit"
+          git push
