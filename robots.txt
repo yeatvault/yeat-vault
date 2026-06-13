@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://yeatvault.github.io/yeat-vault/sitemap.xml
